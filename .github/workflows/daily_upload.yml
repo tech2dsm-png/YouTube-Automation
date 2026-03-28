@@ -1,0 +1,47 @@
+name: Daily YouTube Scheduler (7 AM IST)
+
+on:
+  schedule:
+    # 01:30 AM UTC = 07:00 AM IST
+    - cron: '30 1 * * *'  
+  workflow_dispatch: 
+
+# --- CRITICAL: MUST ADD THIS FOR THE BOT TO PUSH ---
+permissions:
+  contents: write
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Added a check so it doesn't crash if requirements.txt is missing
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        
+      - name: Run Executor
+        env:
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          CLIENT_SECRETS_PATH: ${{ secrets.CLIENT_SECRETS_PATH }}
+          SERVICE_ACCOUNT_PATH: ${{ secrets.SERVICE_ACCOUNT_PATH }}
+          DB_PATH: ${{ secrets.DB_PATH }}
+          METADATA_CSV: metadata.csv
+        run: python executor.py
+
+      - name: Commit and Push Metadata Updates
+        run: |
+          git config --global user.name "SankalanAI-Bot"
+          git config --global user.email "tech2dsm@gmail.com"
+          git add metadata.csv
+          # Use lowercase [skip ci] to prevent an infinite loop
+          git commit -m "Automated metadata update: YouTube Scheduled [skip ci]" || echo "No changes to commit"
+          git push
