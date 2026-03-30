@@ -3,16 +3,16 @@ import shutil
 import sqlite3
 from init_db import run_setup, sync_db_to_csv
 
-def drip_feed_publish(count=2):
+def drip_feed_publish(count=1):
     """
-    Identifies videos marked as 'uploaded-to-drive' and moves them 
-    through the publication pipeline.
+    Identifies a single video marked as 'uploaded-to-drive' and 
+    moves it through the publication pipeline.
     """
     # Connect to the local SQLite instance
     conn = sqlite3.connect("youtube_master.db")
     cursor = conn.cursor()
     
-    # Select candidate videos based on the specific Drive status
+    # Select exactly ONE candidate video (count=1)
     cursor.execute("""
         SELECT video_file, title, description 
         FROM video_queue 
@@ -59,9 +59,8 @@ def drip_feed_publish(count=2):
 
 if __name__ == "__main__":
     # Ensure the database schema is provisioned from the CSV source 
-    # to prevent 'no such table' exceptions in transient environments.
     print("Synchronizing project state...")
     run_setup()
     
-    # Execute the core publishing logic
-    drip_feed_publish()
+    # Execute the core publishing logic for exactly 1 video
+    drip_feed_publish(count=1)
