@@ -1,34 +1,40 @@
 name: Daily YouTube Scheduler (7 AM IST)
 
+# Runs every morning at 7:00 AM IST (01:30 AM UTC)
+# Manually triggerable for testing via "Run workflow" button
 on:
   schedule:
-    # 01:30 AM UTC = 07:00 AM IST
     - cron: '30 1 * * *'  
   workflow_dispatch: 
 
-# --- CRITICAL: MUST ADD THIS FOR THE BOT TO PUSH ---
 permissions:
   contents: write
 
 jobs:
   upload:
+    name: Execute YouTube Upload Pipeline
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      
-      - name: Install Dependencies
+          python-version: '3.11' # Upgraded from 3.10 to support scikit-learn 1.8.0
+          cache: 'pip'           # Added caching to make subsequent runs faster
+
+      - name: Install Project Dependencies
         run: |
           python -m pip install --upgrade pip
-          # Added a check so it doesn't crash if requirements.txt is missing
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements.txt ]; then 
+            pip install -r requirements.txt
+          else
+            echo "Warning: requirements.txt not found, skipping install."
+          fi
         
-      - name: Run Executor
+      - name: Run YouTube Executor
         env:
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
           CLIENT_SECRETS_PATH: ${{ secrets.CLIENT_SECRETS_PATH }}
@@ -37,11 +43,16 @@ jobs:
           METADATA_CSV: metadata.csv
         run: python executor.py
 
-      - name: Commit and Push Metadata Updates
+      - name: Sync Metadata Changes
         run: |
           git config --global user.name "SankalanAI-Bot"
           git config --global user.email "tech2dsm@gmail.com"
-          git add metadata.csv
-          # Use lowercase [skip ci] to prevent an infinite loop
-          git commit -m "Automated metadata update: YouTube Scheduled [skip ci]" || echo "No changes to commit"
-          git push
+          
+          # Only proceed if the executor actually changed the CSV
+          if [[ -n $(git status --porcelain metadata.csv) ]]; then
+            git add metadata.csv
+            git commit -m "chore: automated metadata sync [skip ci]"
+            git push
+          else
+            echo "No metadata changes detected. Skipping push."
+          fi
