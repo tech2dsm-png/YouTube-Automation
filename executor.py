@@ -9,7 +9,7 @@ def drip_feed_publish(count=2):
     cursor = conn.cursor()
     
     # Grab the next 2 videos from GC storage
-    cursor.execute("SELECT video_file, title, description FROM video_queue WHERE status = 'GC storage' LIMIT ?", (count,))
+    cursor.execute("SELECT video_file, title, description FROM video_queue WHERE status = 'uploaded-to-drive' LIMIT ?", (count,))
     rows = cursor.fetchall()
     
     for file_name, title, desc in rows:
