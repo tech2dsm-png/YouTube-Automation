@@ -49,6 +49,9 @@ logs/*.log
 *.db-wal
 *.db-shm
 
+# THE CRITICAL FIX: Allow our specific database to be tracked
+!youtube_master.db
+
 # =================================================================
 # 5. IDE & SYSTEM JUNK
 # =================================================================
