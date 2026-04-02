@@ -4,72 +4,97 @@ import pandas as pd
 from google.oauth2.service_account import Credentials
 import os
 import traceback
+import logging
+from dotenv import load_dotenv
 
-# 1. Configuration
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(BASE_DIR)
+# --- Load Environment Variables ---
+load_dotenv()
 
-# Paths to your local files
-DB_PATH = os.path.join(PROJECT_ROOT, "youtube_master.db") 
-JSON_KEY_FILE = os.path.join(PROJECT_ROOT, "credentials", "service-account.json") 
+# Use the same environment variables as feeder.py for consistency
+DB_PATH = os.getenv("DB_PATH", "youtube_master.db") 
+JSON_KEY_FILE = os.getenv("SERVICE_ACCOUNT_JSON", os.path.join("credentials", "service-account.json"))
 
 # This must match the name at the very top of your Google Sheet browser tab
 SHEET_NAME = "Youtube_Automation"
 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+
 def migrate_all_to_cloud():
+    """Syncs the 14-column video_queue and system_snapshots to Google Sheets"""
     try:
-        # Authenticate with Google
+        # 1. Authenticate with Google
         scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         
         if not os.path.exists(JSON_KEY_FILE):
-            print(f"Key file not found at: {JSON_KEY_FILE}")
+            logging.error(f"❌ Key file not found at: {JSON_KEY_FILE}")
             return
 
         creds = Credentials.from_service_account_file(JSON_KEY_FILE, scopes=scopes)
         client = gspread.authorize(creds)
         
-        print(f"Connecting to sheet named: {SHEET_NAME}...")
-        
-        # Opening by Name (Ensure the Service Account is an Editor on this sheet)
+        logging.info(f"Connecting to Google Sheet: {SHEET_NAME}...")
         spreadsheet = client.open(SHEET_NAME)
-        sheet = spreadsheet.sheet1
         
         # 2. Get Data from Local SQL Database
         if not os.path.exists(DB_PATH):
-            print(f"Database file not found at: {DB_PATH}")
+            logging.error(f"❌ Database file not found at: {DB_PATH}")
             return
 
         conn = sqlite3.connect(DB_PATH)
-        # Selecting the specific columns needed for the automation
-        query = "SELECT id, video_file, title, description, status, drive_id, youtube_url, created_at FROM video_queue"
-        df = pd.read_sql_query(query, conn)
+        
+        # Fetch ALL 14 columns from the main queue
+        df_videos = pd.read_sql_query("SELECT * FROM video_queue", conn)
+        
+        # Fetch Snapshots for the Power BI Burn-down chart
+        df_snapshots = pd.read_sql_query("SELECT * FROM system_snapshots", conn)
+        
         conn.close()
 
-        if df.empty:
-            print("Database is empty. Nothing to migrate.")
-            return
+        # 3. Sync Main Video Data (Worksheet: Video_Queue)
+        if not df_videos.empty:
+            try:
+                sheet_main = spreadsheet.worksheet("Video_Queue")
+            except gspread.exceptions.WorksheetNotFound:
+                logging.info("Worksheet 'Video_Queue' not found. Creating it...")
+                sheet_main = spreadsheet.add_worksheet(title="Video_Queue", rows="1000", cols="20")
+            
+            sheet_main.clear()
+            
+            # Clean data for Sheets: replace NaN with empty strings
+            df_videos = df_videos.fillna("").astype(str)
+            all_main_data = [df_videos.columns.values.tolist()] + df_videos.values.tolist()
+            
+            # Update the sheet (using the list of lists format)
+            sheet_main.update(values=all_main_data, range_name='A1')
+            logging.info(f"✅ Synced {len(df_videos)} videos to 'Video_Queue' tab.")
+        else:
+            logging.warning("Video_Queue table is empty. Nothing to sync.")
 
-        # 3. Prepare data for upload
-        df = df.fillna("") # Replace empty values with blank strings
-        df = df.astype(str) # Convert everything to string for Google Sheets compatibility
-        
-        header = df.columns.values.tolist()
-        data_rows = df.values.tolist()
-        all_data = [header] + data_rows
+        # 4. Sync Snapshot Data (Worksheet: Snapshots)
+        if not df_snapshots.empty:
+            try:
+                sheet_snap = spreadsheet.worksheet("Snapshots")
+            except gspread.exceptions.WorksheetNotFound:
+                logging.info("Worksheet 'Snapshots' not found. Creating it...")
+                sheet_snap = spreadsheet.add_worksheet(title="Snapshots", rows="1000", cols="10")
+            
+            sheet_snap.clear()
+            
+            df_snapshots = df_snapshots.fillna("").astype(str)
+            all_snap_data = [df_snapshots.columns.values.tolist()] + df_snapshots.values.tolist()
+            
+            sheet_snap.update(values=all_snap_data, range_name='A1')
+            logging.info(f"✅ Synced {len(df_snapshots)} snapshots to 'Snapshots' tab.")
 
-        # 4. Clear and Upload
-        print(f"Clearing old data and uploading {len(data_rows)} rows...")
-        sheet.clear()
-        
-        # Uploading starting from cell A1
-        sheet.update(all_data, 'A1')
-        
-        print("Success! Data is now in the Google Sheet.")
+        logging.info("🚀 SUCCESS! Google Sheets is now 100% in sync with your local DB.")
 
     except Exception:
-        print("--- DETAILED ERROR LOG START ---")
+        logging.error("--- DETAILED ERROR LOG ---")
         traceback.print_exc()
-        print("--- DETAILED ERROR LOG END ---")
+
+def run_sync():
+    """Alias for orchestrator"""
+    migrate_all_to_cloud()
 
 if __name__ == "__main__":
-    migrate_all_to_cloud()
+    run_sync()

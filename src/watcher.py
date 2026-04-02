@@ -1,115 +1,118 @@
-import time
 import os
-import sqlite3
+import time
 import logging
+import sqlite3
+import sys
 import tkinter as tk
 from tkinter import simpledialog
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from dotenv import load_dotenv
 
-# Import your sync function from your init_db script
-from init_db import sync_db_to_csv
+# Path Fix
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Settings
-WATCH_DIR = "videos"
-DB_NAME = "youtube_master.db"
+try:
+    import init_db
+    import cloud_sync_init
+except ImportError:
+    from src import init_db
+    from src import cloud_sync_init
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+load_dotenv()
 
-def get_missing_metadata(file_name):
-    """Triggers a GUI popup to collect Title and Description."""
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WATCH_DIR = os.path.join(BASE_DIR, "videos")
+DB_PATH = os.path.join(BASE_DIR, "youtube_master.db")
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - [WATCHER] - %(message)s')
+
+def get_topmost_metadata(file_name):
+    """Forcefully brings the metadata entry popup to the front of all Windows apps."""
     root = tk.Tk()
     root.withdraw()
-    # Forces the popup to appear on top of all other windows
-    root.attributes("-topmost", True)
     
-    title = simpledialog.askstring("New Video Detected", f"No data found for: {file_name}\n\nEnter Title:")
-    description = simpledialog.askstring("New Video Detected", "Enter Description (Tags/Details):")
+    # Force to front
+    root.attributes('-topmost', True)
+    root.update()
+    root.deiconify()
+    root.lift()
+    root.focus_force()
+
+    title = simpledialog.askstring(
+        "YouTube Metadata Entry", 
+        f"New Video Detected: {file_name}\n\nEnter Title:", 
+        parent=root
+    )
+    
+    if not title:
+        root.destroy()
+        return None, None
+        
+    description = simpledialog.askstring(
+        "YouTube Metadata Entry", 
+        "Enter Description:", 
+        parent=root
+    )
     
     root.destroy()
     return title, description
 
-def wait_for_file_stability(file_path):
-    """Ensures the file has finished copying before processing."""
-    last_size = -1
-    while True:
-        try:
-            current_size = os.path.getsize(file_path)
-            if current_size == last_size:
-                break
-            last_size = current_size
-            time.sleep(2) # Wait 2 seconds between checks
-        except OSError:
-            time.sleep(1)
-            continue
-
 class VideoHandler(FileSystemEventHandler):
-    def on_created(self, event):
-        # Ignore folders and non-mp4 files
-        if event.is_directory or not event.src_path.lower().endswith(".mp4"):
-            return
-        
-        file_path = event.src_path
-        file_name = os.path.basename(file_path)
-        
-        logging.info(f"Detected: {file_name}. Waiting for copy to complete...")
-        wait_for_file_stability(file_path)
-        
-        logging.info(f"Processing stable file: {file_name}")
+    def process_video(self, file_path):
+        if file_path.lower().endswith(('.mp4', '.mov', '.mkv')):
+            file_name = os.path.basename(file_path)
+            logging.info(f"✨ Processing video: {file_name}")
+            
+            # Increased delay to ensure Windows releases the file handle
+            time.sleep(3)
 
-        try:
-            with sqlite3.connect(DB_NAME) as connection:
-                cursor = connection.cursor()
-                
-                # 1. Check if the file name already exists in our database
-                cursor.execute("SELECT status FROM video_queue WHERE video_file = ?", (file_name,))
-                existing_record = cursor.fetchone()
-
-                if existing_record:
-                    # Case A: File is in your pre-defined list (e.g., your 150 videos)
-                    # We just flip it to 'pending' so the feeder picks it up.
-                    logging.info(f"Found record for {file_name}. Activating status to 'pending'...")
-                    cursor.execute(
-                        "UPDATE video_queue SET status = 'pending' WHERE video_file = ?", 
-                        (file_name,)
-                    )
-                else:
-                    # Case B: Totally new file - Ask for input via Popup
-                    logging.info(f"No record found for {file_name}. Requesting metadata...")
-                    u_title, u_desc = get_missing_metadata(file_name)
+            title, description = get_topmost_metadata(file_name)
+            
+            if title:
+                try:
+                    with sqlite3.connect(DB_PATH) as conn:
+                        conn.execute("""
+                            INSERT INTO video_queue (video_file, title, description, status)
+                            VALUES (?, ?, ?, 'pending')
+                            ON CONFLICT(video_file) DO UPDATE SET
+                                title = excluded.title,
+                                description = excluded.description,
+                                status = 'pending'
+                        """, (file_name, title, description))
                     
-                    # Handle Cancel/Close (None) or Empty inputs
-                    if u_title is None or u_title.strip() == "": u_title = file_name
-                    if u_desc is None or u_desc.strip() == "": u_desc = "Uploaded via Auto-Watcher"
+                    init_db.sync_db_to_csv()
+                    init_db.update_system_snapshot()
+                    cloud_sync_init.run_sync()
+                    logging.info(f"🚀 Success: {file_name} is synced.")
+                except Exception as e:
+                    logging.error(f"❌ Sync Error: {e}")
+            else:
+                logging.warning(f"⚠️ Skipped: {file_name}")
 
-                    query = "INSERT INTO video_queue (video_file, title, description, status) VALUES (?, ?, ?, ?)"
-                    cursor.execute(query, (file_name, u_title, u_desc, "pending"))
-                
-                connection.commit()
-            
-            # 2. Sync the Database changes back to your metadata.csv
-            sync_db_to_csv()
-            logging.info(f"✅ Successfully synchronized: {file_name}")
-            
-        except Exception as error:
-            logging.error(f"Error in watcher processing: {error}")
+    def on_created(self, event):
+        if not event.is_directory:
+            self.process_video(event.src_path)
+
+    def on_moved(self, event):
+        # Handles cases where files are moved into the folder
+        if not event.is_directory:
+            self.process_video(event.dest_path)
 
 def start_watcher():
-    if not os.path.exists(WATCH_DIR): 
+    if not os.path.exists(WATCH_DIR):
         os.makedirs(WATCH_DIR)
         
-    observer = Observer()
     event_handler = VideoHandler()
+    observer = Observer()
     observer.schedule(event_handler, WATCH_DIR, recursive=False)
     
-    logging.info(f"🚀 Watcher Active. Monitoring: {WATCH_DIR}")
+    logging.info(f"📡 Monitoring: {WATCH_DIR}")
     observer.start()
-    
     try:
-        while True: 
+        while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        logging.info("Stopping watcher...")
         observer.stop()
     observer.join()
 

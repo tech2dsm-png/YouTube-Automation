@@ -1,66 +1,56 @@
+import logging
+import time
+import sys
 import os
-import shutil
-import sqlite3
-from init_db import run_setup, sync_db_to_csv
+from datetime import datetime
 
-def drip_feed_publish(count=1):
-    """
-    Identifies a single video marked as 'uploaded-to-drive' and 
-    moves it through the publication pipeline.
-    """
-    # Connect to the local SQLite instance
-    conn = sqlite3.connect("youtube_master.db")
-    cursor = conn.cursor()
-    
-    # Select exactly ONE candidate video (count=1)
-    cursor.execute("""
-        SELECT video_file, title, description 
-        FROM video_queue 
-        WHERE status = 'uploaded-to-drive' 
-        LIMIT ?
-    """, (count,))
-    
-    rows = cursor.fetchall()
-    
-    if not rows:
-        print("Notification: No records identified with 'uploaded-to-drive' status.")
-        return
+# 1. CONFIGURE LOGGING
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - [MASTER-EXECUTOR] - %(message)s'
+)
 
-    for file_name, title, desc in rows:
-        print(f"Initiating publication for: {title}")
+# 2. IMPORT CORE LOGIC FROM SRC FOLDER
+try:
+    from src import init_db
+    from src import feeder
+    from src import cloud_sync_init
+except ImportError as e:
+    logging.error(f"CRITICAL ERROR: Could not find scripts in the 'src' folder. {e}")
+    logging.info("Make sure 'src' contains an empty file named __init__.py")
+    sys.exit(1)
+
+def run_complete_pipeline():
+    """
+    Orchestrates the 3-step automation pipeline from the src package.
+    """
+    start_time = datetime.now()
+    logging.info("🚀 STARTING COMPLETE AUTOMATION PIPELINE")
+
+    try:
+        # --- STEP 1: DATABASE & FOLDER INTEGRITY ---
+        logging.info("--- STEP 1: Initializing Database (src/init_db.py) ---")
+        init_db.run_setup()
         
-        # --- [Placeholder for YouTube Data API Integration] ---
-        # This section will be replaced by the authenticated upload logic.
-        video_url = f"https://youtu.be/example_{file_name}" 
+        # --- STEP 2: DRIVE UPLOADS ---
+        logging.info("--- STEP 2: Running Drive Feeder (src/feeder.py) ---")
+        feeder.run_feeder()
+
+        # --- STEP 3: ANALYTICS SYNC ---
+        logging.info("--- STEP 3: Syncing to Google Sheets (src/cloud_sync_init.py) ---")
+        cloud_sync_init.run_sync()
+
+        # --- FINAL SUMMARY ---
+        end_time = datetime.now()
+        duration = end_time - start_time
         
-        # Transition status to 'published' and archive the generated URL
-        cursor.execute("""
-            UPDATE video_queue 
-            SET status = 'published', youtube_url = ? 
-            WHERE video_file = ?
-        """, (video_url, file_name))
-        
-        # Workspace management: Relocate processed local files if present
-        local_path = os.path.join("videos", file_name)
-        if os.path.exists(local_path):
-            if not os.path.exists("uploaded"): 
-                os.makedirs("uploaded")
-            shutil.move(local_path, os.path.join("uploaded", file_name))
-            print(f"File {file_name} archived to the 'uploaded' directory.")
-        else:
-            print(f"Note: {file_name} is not present in the local workspace; proceeding with cloud-only metadata.")
-            
-    conn.commit()
-    conn.close()
-    
-    # Re-synchronize the database state with the master CSV file
-    sync_db_to_csv()
-    print("Database and CSV synchronization finalized.")
+        logging.info("✅ PIPELINE EXECUTION FINISHED SUCCESSFULLY")
+        logging.info(f"Total Time Taken: {duration}")
+        print("\nYour Power BI Dashboard is now updated with the latest data.")
+
+    except Exception as error:
+        logging.error(f"❌ PIPELINE FAILED: {error}")
+        print("\nCheck the logs above to see which step caused the issue.")
 
 if __name__ == "__main__":
-    # Ensure the database schema is provisioned from the CSV source 
-    print("Synchronizing project state...")
-    run_setup()
-    
-    # Execute the core publishing logic for exactly 1 video
-    drip_feed_publish(count=1)
+    run_complete_pipeline()

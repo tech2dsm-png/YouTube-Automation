@@ -1,7 +1,5 @@
 name: Daily YouTube Scheduler (7 AM IST)
 
-# Runs every morning at 7:00 AM IST (01:30 AM UTC)
-# Manually triggerable for testing via "Run workflow" button
 on:
   schedule:
     - cron: '30 1 * * *'  
@@ -19,7 +17,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          # Fetch all history so rebase works correctly
           fetch-depth: 0
 
       - name: Set up Python Environment
@@ -34,32 +31,40 @@ jobs:
           if [ -f requirements.txt ]; then 
             pip install -r requirements.txt
           else
-            echo "Warning: requirements.txt not found, skipping install."
+            pip install google-api-python-client google-auth-oauthlib pandas
           fi
-        
+
+      - name: Create Credentials Files from Secrets
+        # This step turns your text secrets into real .json files the script can read
+        run: |
+          echo '${{ secrets.CLIENT_SECRETS_JSON }}' > client_secrets.json
+          echo '${{ secrets.SERVICE_ACCOUNT_JSON }}' > service_account.json
+
       - name: Run YouTube Executor
         env:
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
-          CLIENT_SECRETS_PATH: ${{ secrets.CLIENT_SECRETS_PATH }}
-          SERVICE_ACCOUNT_PATH: ${{ secrets.SERVICE_ACCOUNT_PATH }}
-          DB_PATH: ${{ secrets.DB_PATH }}
+          # Point the script to the files we just created above
+          CLIENT_SECRETS_PATH: client_secrets.json
+          SERVICE_ACCOUNT_PATH: service_account.json
+          # Pass the Refresh Token directly as a string
+          GOOGLE_YOUTUBE_TOKEN: ${{ secrets.GOOGLE_YOUTUBE_TOKEN }}
+          DB_PATH: youtube_master.db
           METADATA_CSV: metadata.csv
-        run: python executor.py
+        run: python uploader.py
 
-      - name: Sync Metadata Changes
+      - name: Sync Changes Back to GitHub
         run: |
           git config --global user.name "SankalanAI-Bot"
           git config --global user.email "tech2dsm@gmail.com"
           
-          # 1. Pull latest changes and rebase to avoid push conflicts
           git pull origin main --rebase
           
-          # 2. Check if metadata.csv was updated by executor.py
-          if [[ -n $(git status --porcelain metadata.csv) ]]; then
-            git add metadata.csv
-            git commit -m "chore: automated metadata sync [skip ci]"
-            # 3. Push the integrated changes back to GitHub
+          # CRITICAL: Add the .db file here so GitHub "remembers" what it uploaded
+          git add metadata.csv youtube_master.db
+          
+          if [[ -n $(git status --porcelain) ]]; then
+            git commit -m "chore: automated sync [skip ci]"
             git push origin main
           else
-            echo "No metadata changes detected. Skipping push."
+            echo "No changes detected."
           fi
