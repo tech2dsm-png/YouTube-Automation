@@ -61,10 +61,10 @@ jobs:
           # Pull any changes first to avoid conflicts
           git pull origin main --rebase
           
-          # Stage the updated database and metadata
-          git add youtube_master.db metadata.csv
+          # CRITICAL FIX: Use -f to bypass .gitignore for the database
+          git add -f youtube_master.db metadata.csv
           
-          # Only commit if there are actual changes (status changed from drive to published)
+          # Only commit if there are actual changes
           if [[ -n $(git status --porcelain) ]]; then
             git commit -m "chore: automated sync [skip ci]"
             git push origin main
