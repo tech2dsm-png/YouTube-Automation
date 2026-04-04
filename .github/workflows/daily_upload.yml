@@ -29,14 +29,10 @@ jobs:
       - name: Install Project Dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then 
-            pip install -r requirements.txt
-          else
-            pip install google-api-python-client google-auth-oauthlib pandas python-dotenv
-          fi
+          # Added gspread and oauth2client so your Google Sheets sync doesn't crash the script
+          pip install google-api-python-client google-auth-oauthlib pandas python-dotenv gspread oauth2client
 
       - name: Create Credentials Files from Secrets
-        # We place these in src/ so uploader.py can find them if needed
         run: |
           echo '${{ secrets.CLIENT_SECRETS_JSON }}' > src/client_secrets.json
           echo '${{ secrets.SERVICE_ACCOUNT_JSON }}' > src/service_account.json
@@ -49,7 +45,6 @@ jobs:
           GOOGLE_YOUTUBE_TOKEN: ${{ secrets.GOOGLE_YOUTUBE_TOKEN }}
           DB_PATH: youtube_master.db
           METADATA_CSV: metadata.csv
-        # Run the script from the root while targeting the src subfolder
         run: python src/uploader.py
 
       - name: Sync Changes Back to GitHub
@@ -57,17 +52,17 @@ jobs:
           git config --global user.name "SankalanAI-Bot"
           git config --global user.email "tech2dsm@gmail.com"
           
-          # --- FIX: PURGE TRANSIENT ARTIFACTS ---
-          # This removes the dynamic JSON files so the workspace is clean for the rebase
+          # --- THE CRITICAL FIX ---
+          # We must remove these transient files so Git doesn't see "unstaged changes"
           rm -f src/client_secrets.json src/service_account.json
           
-          # Pull any changes from the repo first to avoid conflicts
+          # Pull the latest to avoid conflict before pushing the new DB state
           git pull origin main --rebase
           
-          # CRITICAL FIX: Use -f to bypass .gitignore for the database and metadata
+          # Explicitly add the database and metadata csv
           git add -f youtube_master.db metadata.csv
           
-          # Only commit if there are actual changes (new video URLs or status updates)
+          # Only commit and push if the local DB was actually modified
           if [[ -n $(git status --porcelain) ]]; then
             git commit -m "chore: automated sync [skip ci]"
             git push origin main
