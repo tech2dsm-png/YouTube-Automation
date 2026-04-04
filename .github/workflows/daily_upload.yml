@@ -29,7 +29,7 @@ jobs:
       - name: Install Project Dependencies
         run: |
           python -m pip install --upgrade pip
-          # Includes gspread/oauth2client for the Google Sheets sync
+          # Includes all necessary libraries for YouTube and Google Sheets sync
           pip install google-api-python-client google-auth-oauthlib pandas python-dotenv gspread oauth2client
 
       - name: Create Credentials Files from Secrets
@@ -49,20 +49,18 @@ jobs:
 
       - name: Sync Changes Back to GitHub
         run: |
-          # 1. THE NUCLEAR RESET
-          # Force delete the temp JSONs and reset the src folder to avoid "unstaged changes"
+          # 1. THE RESET: Delete temporary files and force Git to "forget" them
           rm -f src/client_secrets.json src/service_account.json
           git checkout src/
           
-          # 2. Setup Bot Identity
+          # 2. Identify the bot
           git config --global user.name "SankalanAI-Bot"
           git config --global user.email "tech2dsm@gmail.com"
           
-          # 3. Pull with Autostash
-          # This hides any accidental dirty changes, pulls the cloud data, and then reapplies
+          # 3. Pull with Autostash: This hides any "dirty" state, pulls, then reapplies
           git pull origin main --rebase --autostash
           
-          # 4. Force add the database and metadata
+          # 4. Force add only the database and metadata
           git add -f youtube_master.db metadata.csv
           
           # 5. Commit and Push
@@ -70,5 +68,5 @@ jobs:
             git commit -m "chore: automated sync [skip ci]"
             git push origin main
           else
-            echo "No changes detected in database. Workspace is clean."
+            echo "No changes detected to sync."
           fi
