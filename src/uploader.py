@@ -67,7 +67,7 @@ def publish_to_youtube(youtube, local_path, title, description):
             'categoryId': '27' # Education
         },
         'status': {
-            'privacyStatus': 'public',
+            'privacyStatus': 'private',
             'selfDeclaredMadeForKids': False,
         }
     }
