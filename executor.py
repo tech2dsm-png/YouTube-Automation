@@ -1,56 +1,64 @@
 import logging
 import time
 import sys
-import os
 from datetime import datetime
+from dotenv import load_dotenv
 
-# 1. CONFIGURE LOGGING
+# 1. INITIALIZE ENVIRONMENT
+load_dotenv()
+
+# 2. CONFIGURE LOGGING
+# We use a professional format to track the execution flow across all modules
 logging.basicConfig(
     level=logging.INFO, 
-    format='%(asctime)s - [MASTER-EXECUTOR] - %(message)s'
+    format='%(asctime)s - [EXECUTOR] - %(levelname)s - %(message)s'
 )
 
-# 2. IMPORT CORE LOGIC FROM SRC FOLDER
+# 3. IMPORT PIPELINE STAGES
 try:
     from src import init_db
     from src import feeder
     from src import cloud_sync_init
 except ImportError as e:
-    logging.error(f"CRITICAL ERROR: Could not find scripts in the 'src' folder. {e}")
-    logging.info("Make sure 'src' contains an empty file named __init__.py")
+    logging.error(f"Module Discovery Failed: {e}")
+    logging.info("Suggestion: Ensure 'src/__init__.py' exists and your terminal is in the project root.")
     sys.exit(1)
 
-def run_complete_pipeline():
+def run_pipeline():
     """
-    Orchestrates the 3-step automation pipeline from the src package.
+    The Master Entry Point. Executes the discovery, migration, 
+    and analytics sync in a single atomic cycle.
     """
     start_time = datetime.now()
-    logging.info("🚀 STARTING COMPLETE AUTOMATION PIPELINE")
+    logging.info("🚀 EXECUTOR: Starting Production Pipeline")
 
     try:
-        # --- STEP 1: DATABASE & FOLDER INTEGRITY ---
-        logging.info("--- STEP 1: Initializing Database (src/init_db.py) ---")
+        # --- STAGE 1: LOCAL STATE SYNC ---
+        # Scans CSV and Folder to mark videos as 'pending' in SQLite
+        logging.info("--- STAGE 1: Refreshing Local Database ---")
         init_db.run_setup()
         
-        # --- STEP 2: DRIVE UPLOADS ---
-        logging.info("--- STEP 2: Running Drive Feeder (src/feeder.py) ---")
-        feeder.run_feeder()
+        # --- STAGE 2: ASSET MIGRATION ---
+        # Uploads to Drive and moves physical files to 'uploaded-to-drive'
+        logging.info("--- STAGE 2: Processing Video Queue ---")
+        feeder.process_queue()
 
-        # --- STEP 3: ANALYTICS SYNC ---
-        logging.info("--- STEP 3: Syncing to Google Sheets (src/cloud_sync_init.py) ---")
-        cloud_sync_init.run_sync()
+        # Cooldown to ensure SQLite file locks are released by the OS
+        time.sleep(1)
 
-        # --- FINAL SUMMARY ---
-        end_time = datetime.now()
-        duration = end_time - start_time
-        
-        logging.info("✅ PIPELINE EXECUTION FINISHED SUCCESSFULLY")
-        logging.info(f"Total Time Taken: {duration}")
-        print("\nYour Power BI Dashboard is now updated with the latest data.")
+        # --- STAGE 3: CLOUD MIRRORING ---
+        # Pushes the finalized SQLite state to Google Sheets for Power BI
+        logging.info("--- STAGE 3: Updating Cloud Dashboard ---")
+        cloud_sync_init.migrate_all_to_cloud()
+
+        # --- EXECUTION SUMMARY ---
+        duration = datetime.now() - start_time
+        logging.info(f"✅ PIPELINE SUCCESSFUL | Total Duration: {duration}")
+        print("\n[COMPLETE] All systems are synced. Check your Google Sheet/Power BI for updates.")
 
     except Exception as error:
-        logging.error(f"❌ PIPELINE FAILED: {error}")
-        print("\nCheck the logs above to see which step caused the issue.")
+        logging.error(f"❌ CRITICAL FAILURE IN PIPELINE: {error}")
+        print("\n[FAIL] Pipeline halted. Review the logs above for the specific error point.")
 
 if __name__ == "__main__":
-    run_complete_pipeline()
+    run_pipeline()

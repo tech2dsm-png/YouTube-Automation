@@ -8,21 +8,20 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google.oauth2.credentials import Credentials
 import google.auth.transport.requests
 
-# Import your sync script to update Power BI/Google Sheets
+# Import sync script to update Google Sheets immediately after publishing
 try:
     from src import cloud_sync_init
 except ImportError:
-    # Fallback if src folder structure is different
-    cloud_sync_init = None
+    import cloud_sync_init
 
-# Configuration from Environment Variables (GitHub Secrets)
+# Configuration
 DB_NAME = os.getenv("DB_PATH", "youtube_master.db")
 DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - [UPLOADER] - %(message)s')
 
 def get_google_creds():
-    """Builds credentials from the Refresh Token stored in GitHub Secrets."""
+    """Builds credentials from the Refresh Token stored in Environment Variables."""
     token_json = os.getenv("GOOGLE_YOUTUBE_TOKEN")
     if not token_json:
         raise Exception("GOOGLE_YOUTUBE_TOKEN secret is missing!")
@@ -36,7 +35,7 @@ def get_google_creds():
     return creds
 
 def download_from_drive(drive_service, file_name, local_path):
-    """Finds the video in the specified Drive folder and downloads it."""
+    """Finds the video in the specified Drive folder and downloads it to the runner."""
     query = f"name = '{file_name}' and '{DRIVE_FOLDER_ID}' in parents"
     results = drive_service.files().list(q=query, fields="files(id, name)").execute()
     items = results.get('files', [])
@@ -47,23 +46,25 @@ def download_from_drive(drive_service, file_name, local_path):
 
     file_id = items[0]['id']
     request = drive_service.files().get_media(fileId=file_id)
-    fh = io.FileIO(local_path, 'wb')
-    downloader = MediaIoBaseDownload(fh, request)
     
-    done = False
-    while not done:
-        status, done = downloader.next_chunk()
-        logging.info(f"Downloading {file_name}: {int(status.progress() * 100)}%")
+    # Download stream
+    with io.FileIO(local_path, 'wb') as fh:
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+            if status:
+                logging.info(f"Downloading {file_name}: {int(status.progress() * 100)}%")
     return True
 
 def publish_to_youtube(youtube, local_path, title, description):
-    """Performs the actual byte-stream upload to YouTube."""
+    """Performs the resumable upload to YouTube."""
     body = {
         'snippet': {
             'title': title,
             'description': description,
-            'tags': ['Python', 'Data Analytics', 'SankalanAI'],
-            'categoryId': '27'
+            'tags': ['Data Analytics', 'Automation', 'Python'],
+            'categoryId': '27' # Education
         },
         'status': {
             'privacyStatus': 'public',
@@ -71,7 +72,7 @@ def publish_to_youtube(youtube, local_path, title, description):
         }
     }
 
-    media = MediaFileUpload(local_path, chunksize=-1, resumable=True)
+    media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True)
     request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
     
     logging.info(f"🚀 Starting YouTube Upload: {title}")
@@ -79,18 +80,19 @@ def publish_to_youtube(youtube, local_path, title, description):
     return response.get("id")
 
 def run_uploader():
-    """Main process to pick ONE staged video and publish it."""
+    """Finds one staged video, publishes it, and updates the ecosystem."""
     try:
         creds = get_google_creds()
         drive_service = build("drive", "v3", credentials=creds)
         youtube_service = build("youtube", "v3", credentials=creds)
 
         with sqlite3.connect(DB_NAME) as conn:
+            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
-            # LIMIT 1 ensures we only post one video per day at 7 AM IST
+            # Select the oldest staged video (FIFO logic)
             cursor.execute("""
-                SELECT video_file, title, description 
+                SELECT id, video_file, title, description 
                 FROM video_queue 
                 WHERE status = 'uploaded-to-drive' 
                 ORDER BY id ASC 
@@ -100,35 +102,51 @@ def run_uploader():
             video = cursor.fetchone()
 
             if not video:
-                logging.info("No videos found with status 'uploaded-to-drive'.")
+                logging.info("Queue empty: No videos with 'uploaded-to-drive' status.")
                 return
 
-            video_file, title, description = video
-            local_temp = f"temp_{video_file}"
+            v_id = video['id']
+            v_file = video['video_file']
+            v_title = video['title']
+            v_desc = video['description']
+            local_temp = f"temp_{v_file}"
             
-            if download_from_drive(drive_service, video_file, local_temp):
-                video_id = publish_to_youtube(youtube_service, local_temp, title, description)
+            # Step 1: Download
+            if download_from_drive(drive_service, v_file, local_temp):
                 
-                if video_id:
-                    youtube_url = f"https://www.youtube.com/watch?v={video_id}"
-                    cursor.execute(
-                        "UPDATE video_queue SET status = 'published', youtube_url = ? WHERE video_file = ?",
-                        (youtube_url, video_file)
-                    )
-                    conn.commit()
-                    logging.info(f"✅ Successfully Published to YouTube: {youtube_url}")
+                # Step 2: Upload
+                y_id = publish_to_youtube(youtube_service, local_temp, v_title, v_desc)
+                
+                if y_id:
+                    y_url = f"https://www.youtube.com/watch?v={y_id}"
                     
-                    # Run the sync to update Google Sheets / Power BI immediately
-                    if cloud_sync_init:
-                        logging.info("Syncing analytics to Google Sheets...")
-                        cloud_sync_init.run_sync()
+                    # Step 3: Atomic Status Update
+                    # Important: Update both the URL and the YouTube ID for future stats tracking
+                    cursor.execute("""
+                        UPDATE video_queue 
+                        SET status = 'published', 
+                            youtube_url = ?, 
+                            youtube_id = ?,
+                            published_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (y_url, y_id, v_id))
+                    conn.commit()
+                    
+                    logging.info(f"✅ Published: {y_url}")
+                    
+                    # Step 4: Sync to Google Sheets
+                    try:
+                        logging.info("Initiating cloud sync to Google Sheets...")
+                        cloud_sync_init.migrate_all_to_cloud()
+                    except Exception as sync_err:
+                        logging.error(f"Post-upload sync failed: {sync_err}")
                 
-                # Cleanup: Delete the temp video file from the GitHub Runner
+                # Step 5: Cleanup temp file
                 if os.path.exists(local_temp):
                     os.remove(local_temp)
             
     except Exception as e:
-        logging.error(f"Uploader process failed: {e}")
+        logging.error(f"Uploader runtime error: {e}")
 
 if __name__ == "__main__":
     run_uploader()
