@@ -2,11 +2,12 @@ name: Daily YouTube Scheduler (7 AM IST)
 
 on:
   schedule:
+    # 01:30 UTC is exactly 07:00 AM IST
     - cron: '30 1 * * *'  
-  workflow_dispatch:
+  workflow_dispatch:      # Allows you to click "Run workflow" manually for testing
 
 permissions:
-  contents: write
+  contents: write         # Required to push the updated .db back to your repo
 
 jobs:
   upload:
@@ -28,6 +29,7 @@ jobs:
       - name: Install Project Dependencies
         run: |
           python -m pip install --upgrade pip
+          # Includes gspread/oauth2client for the Google Sheets sync
           pip install google-api-python-client google-auth-oauthlib pandas python-dotenv gspread oauth2client
 
       - name: Create Credentials Files from Secrets
@@ -38,6 +40,8 @@ jobs:
       - name: Run YouTube Executor
         env:
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          CLIENT_SECRETS_PATH: src/client_secrets.json
+          SERVICE_ACCOUNT_PATH: src/service_account.json
           GOOGLE_YOUTUBE_TOKEN: ${{ secrets.GOOGLE_YOUTUBE_TOKEN }}
           DB_PATH: youtube_master.db
           METADATA_CSV: metadata.csv
@@ -45,21 +49,26 @@ jobs:
 
       - name: Sync Changes Back to GitHub
         run: |
-          # 1. Force Git to forget the temporary JSON files
+          # 1. THE NUCLEAR RESET
+          # Force delete the temp JSONs and reset the src folder to avoid "unstaged changes"
           rm -f src/client_secrets.json src/service_account.json
-          git checkout src/  # This resets the folder state
+          git checkout src/
           
           # 2. Setup Bot Identity
           git config --global user.name "SankalanAI-Bot"
           git config --global user.email "tech2dsm@gmail.com"
           
-          # 3. Rebase and Push
-          git pull origin main --rebase
+          # 3. Pull with Autostash
+          # This hides any accidental dirty changes, pulls the cloud data, and then reapplies
+          git pull origin main --rebase --autostash
+          
+          # 4. Force add the database and metadata
           git add -f youtube_master.db metadata.csv
           
+          # 5. Commit and Push
           if [[ -n $(git status --porcelain) ]]; then
             git commit -m "chore: automated sync [skip ci]"
             git push origin main
           else
-            echo "No changes to sync."
+            echo "No changes detected in database. Workspace is clean."
           fi
