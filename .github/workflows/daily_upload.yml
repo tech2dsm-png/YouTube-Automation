@@ -32,14 +32,20 @@ jobs:
 
       - name: Create Credentials Files from Secrets
         run: |
+          # Create the credentials folder for Google Sheets sync
+          mkdir -p credentials
+          
+          # Place the YouTube client secret in src
           echo '${{ secrets.CLIENT_SECRETS_JSON }}' > src/client_secrets.json
-          echo '${{ secrets.SERVICE_ACCOUNT_JSON }}' > src/service_account.json
+          
+          # Place the Google Sheets service account in the path the script expects
+          echo '${{ secrets.SERVICE_ACCOUNT_JSON }}' > credentials/service-account.json
 
       - name: Run YouTube Executor
         env:
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
           CLIENT_SECRETS_PATH: src/client_secrets.json
-          SERVICE_ACCOUNT_PATH: src/service_account.json
+          SERVICE_ACCOUNT_PATH: credentials/service-account.json
           GOOGLE_YOUTUBE_TOKEN: ${{ secrets.GOOGLE_YOUTUBE_TOKEN }}
           DB_PATH: youtube_master.db
           METADATA_CSV: metadata.csv
@@ -52,8 +58,10 @@ jobs:
           git config --global user.email "tech2dsm@gmail.com"
 
           # 2. THE FORCE CLEANUP (Fixes Exit Code 128)
-          # Physically remove temp files then force Git to forget them
-          rm -f src/client_secrets.json src/service_account.json
+          # Physically remove temp files from both locations
+          rm -f src/client_secrets.json
+          rm -rf credentials/
+          
           git reset --hard HEAD
           git clean -fd
 
